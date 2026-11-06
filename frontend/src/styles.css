@@ -1,0 +1,30 @@
+@import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap");
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  color: #17243b;
+  background: #f5f7fb;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; min-height: 100vh; }
+button, input, select { font: inherit; }
+h1, h2, h3 { font-family: "Manrope", "DM Sans", sans-serif; }
+
+@layer components {
+  .card { @apply rounded-2xl border border-slate-200/80 bg-white p-5 shadow-card sm:p-6; }
+  .section-title { @apply text-lg font-bold tracking-tight text-ink; }
+  .field-label { @apply mb-1.5 block text-sm font-medium text-slate-700; }
+  .field { @apply w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-ink outline-none transition focus:border-blue-400 focus:ring-4 focus:ring-blue-50; }
+  .primary-button { @apply inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50; }
+  .secondary-button { @apply inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-50; }
+}
+
+.data-table thead { background: #f8fafc; }
+.data-table th { @apply whitespace-nowrap px-3 py-3 font-semibold text-slate-500; }
+.data-table td { @apply whitespace-nowrap border-t border-slate-100 px-3 py-3 text-slate-600; }
