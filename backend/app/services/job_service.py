@@ -10,7 +10,7 @@ import pandas as pd
 from app.core.storage import Dataset
 from app.schemas import TrainRequest
 from app.services.data_service import read_dataset
-from app.services.training_service import train_model
+from app.services.training_service import TrainingCancelled, train_model
 
 
 logger = logging.getLogger(__name__)
@@ -36,6 +36,7 @@ class JobManager:
             "validation_loss_history": [],
             "error": None,
             "results": None,
+            "cancel_requested": False,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         with self._lock:
@@ -45,6 +46,8 @@ class JobManager:
 
     def _run(self, job_id: str, dataset: Dataset, request: TrainRequest) -> None:
         with self._lock:
+            if self._jobs[job_id]["status"] == "cancelled":
+                return
             self._jobs[job_id]["status"] = "running"
         try:
             frame = read_dataset(dataset.path)
@@ -54,7 +57,15 @@ class JobManager:
                     job = self._jobs[job_id]
                     job.update(values)
 
-            results = train_model(frame, request, update_progress)
+            def should_stop() -> bool:
+                with self._lock:
+                    return bool(self._jobs[job_id]["cancel_requested"])
+
+            results = train_model(frame, request, update_progress, should_stop)
+        except TrainingCancelled:
+            with self._lock:
+                self._jobs[job_id]["status"] = "cancelled"
+            return
         except (ValueError, RuntimeError) as exc:
             with self._lock:
                 self._jobs[job_id]["status"] = "failed"
@@ -78,6 +89,18 @@ class JobManager:
             job = self._jobs[job_id]
             job["status"] = "completed"
             job["results"] = results
+
+    def cancel(self, job_id: str) -> dict | None:
+        """Request cancellation. Queued jobs are cancelled at once; running jobs stop after the current epoch."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return None
+            if job["status"] in {"queued", "running"}:
+                job["cancel_requested"] = True
+                if job["status"] == "queued":
+                    job["status"] = "cancelled"
+            return {key: value for key, value in job.items() if key != "results"}
 
     def get(self, job_id: str) -> dict | None:
         with self._lock:

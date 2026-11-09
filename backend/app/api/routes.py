@@ -108,10 +108,15 @@ def get_dataset(dataset_id: str):
 
 
 @router.get("/datasets/{dataset_id}/eda")
-def get_eda(dataset_id: str, column: str | None = Query(default=None)):
+def get_eda(
+    dataset_id: str,
+    column: str | None = Query(default=None),
+    date_column: str | None = Query(default=None),
+    period: int | None = Query(default=None, ge=2, le=1000),
+):
     dataset = _require_dataset(dataset_id)
     try:
-        return explore_dataset(read_dataset(dataset.path), column)
+        return explore_dataset(read_dataset(dataset.path), column, date_column, period)
     except DatasetValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -145,6 +150,16 @@ def get_job(job_id: str):
     return job
 
 
+@router.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: str):
+    job = job_manager.cancel(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="No se encontró el trabajo de entrenamiento.")
+    if job["status"] in {"completed", "failed"}:
+        raise HTTPException(status_code=409, detail="El entrenamiento ya terminó y no se puede cancelar.")
+    return job
+
+
 @router.get("/jobs/{job_id}/results")
 def get_job_results(job_id: str):
     job = job_manager.get(job_id)
@@ -152,6 +167,8 @@ def get_job_results(job_id: str):
         raise HTTPException(status_code=404, detail="No se encontró el trabajo de entrenamiento.")
     if job["status"] == "failed":
         raise HTTPException(status_code=422, detail=job["error"] or "El entrenamiento falló.")
+    if job["status"] == "cancelled":
+        raise HTTPException(status_code=409, detail="El entrenamiento fue cancelado.")
     results = job_manager.results(job_id)
     if results is None:
         raise HTTPException(status_code=409, detail="Los resultados estarán disponibles al terminar el entrenamiento.")
@@ -167,7 +184,7 @@ def download_predictions(job_id: str):
             raise HTTPException(status_code=404, detail="No se encontró el trabajo de entrenamiento.")
         raise HTTPException(status_code=409, detail="Las predicciones aún no están disponibles.")
     output = io.StringIO(newline="")
-    writer = csv.DictWriter(output, fieldnames=["date", "actual", "predicted"])
+    writer = csv.DictWriter(output, fieldnames=["date", "actual", "predicted", "naive"])
     writer.writeheader()
     writer.writerows(results["predictions"])
     output.seek(0)

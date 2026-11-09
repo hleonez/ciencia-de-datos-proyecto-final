@@ -17,6 +17,7 @@ class TrainRequest(BaseModel):
     test_ratio: float = Field(default=0.15, gt=0, lt=0.4)
     missing_strategy: Literal["drop", "forward_fill", "interpolate"] = "forward_fill"
     patience: int = Field(default=8, ge=1, le=50)
+    forecast_steps: int = Field(default=0, ge=0, le=200)
 
     @model_validator(mode="after")
     def validate_ratios_and_columns(self) -> "TrainRequest":
