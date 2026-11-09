@@ -68,6 +68,83 @@ def test_fully_empty_column_is_not_classified_as_numeric():
     assert kinds["value"] == "numeric" and kinds["timestamp"] == "date"
 
 
+def stacked_frame():
+    one = seasonal_frame(40)
+    other = one.copy()
+    one["zona"] = "Norte"
+    other["zona"] = "Sur"
+    other["value"] = other["value"] + 100
+    return pd.concat([one, other], ignore_index=True)
+
+
+def test_mixed_dates_are_not_trainable_until_one_category_is_selected():
+    from app.services.data_service import describe_series
+
+    mixed = describe_series(stacked_frame(), "timestamp")
+    chosen = describe_series(stacked_frame(), "timestamp", [("zona", "Norte")])
+
+    assert mixed["single_series"] is False and mixed["trainable"] is False
+    assert mixed["unique_dates"] == 40 and mixed["row_count"] == 80
+    assert "una fila por fecha" in mixed["story"]
+    assert any(item["name"] == "zona" for item in mixed["categories"])
+    assert chosen["trainable"] is True and chosen["row_count"] == 40
+    assert chosen["suggested_lookback"] >= 2
+    assert "Una sola serie" in chosen["story"]
+
+
+def test_training_refuses_a_mixed_table_and_accepts_the_filtered_series():
+    import pytest
+    from app.services.data_service import DatasetValidationError
+
+    with pytest.raises(DatasetValidationError, match="una fila por fecha"):
+        prepare_sequences(stacked_frame(), make_request(lookback=4))
+
+    prepared = prepare_sequences(
+        stacked_frame(), make_request(lookback=4, filters=[{"column": "zona", "value": "Norte"}])
+    )
+
+    assert len(prepared["test_dates"]) > 0
+    assert prepared["test_dates"] == sorted(prepared["test_dates"])
+
+
+def test_prefix_filter_groups_labels_that_would_otherwise_be_a_single_row():
+    from app.services.data_service import describe_series
+
+    one = seasonal_frame(16)
+    frame = pd.concat([one, one], ignore_index=True)
+    frame["periodo"] = [f"Annual Average {index}" for index in range(16)] + [f"Summer {index}" for index in range(16)]
+
+    mixed = describe_series(frame, "timestamp")
+    annual = describe_series(frame, "timestamp", [("periodo", "Annual", "prefix")])
+    periodo = next(item for item in mixed["categories"] if item["name"] == "periodo")
+
+    assert mixed["trainable"] is False and mixed["row_count"] == 32
+    assert any(option["match"] == "prefix" and option["value"] == "Annual" for option in periodo["options"])
+    assert annual["trainable"] is True
+    assert annual["row_count"] == 16 and annual["unique_dates"] == 16
+
+
+def test_series_endpoint_tells_the_story_of_the_selected_slice():
+    with TestClient(app) as client:
+        dataset_id = client.post(
+            "/api/v1/datasets",
+            files={"file": ("mixed.csv", stacked_frame().to_csv(index=False), "text/csv")},
+        ).json()["id"]
+        mixed = client.post(f"/api/v1/datasets/{dataset_id}/series", json={"date_column": "timestamp"})
+        chosen = client.post(
+            f"/api/v1/datasets/{dataset_id}/series",
+            json={"date_column": "timestamp", "filters": [{"column": "zona", "value": "Norte"}]},
+        )
+        eda = client.get(
+            f"/api/v1/datasets/{dataset_id}/eda",
+            params={"column": "value", "filters": '[{"column": "zona", "value": "Norte"}]'},
+        )
+
+    assert mixed.status_code == 200 and mixed.json()["trainable"] is False
+    assert chosen.json()["trainable"] is True and "Norte" in chosen.json()["story"]
+    assert eda.status_code == 200 and len(eda.json()["series"]) == 40
+
+
 def test_eda_boxplot_counts_outliers():
     frame = seasonal_frame()
     frame.loc[10, "value"] = 10_000

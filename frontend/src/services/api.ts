@@ -1,4 +1,4 @@
-import type { Dataset, Eda, TrainingJob, TrainingResults, TrainConfig } from "../types";
+import type { Dataset, Eda, SeriesFilter, SeriesProfile, TrainingJob, TrainingResults, TrainConfig } from "../types";
 
 const API_URL = (import.meta.env.VITE_API_URL || "http://localhost:8000/api/v1").replace(/\/$/, "");
 
@@ -34,14 +34,21 @@ export const api = {
     body.append("file", file);
     return request<Dataset>("/datasets", { method: "POST", body });
   },
-  eda: (datasetId: string, column: string, dateColumn = "", period = 0) => {
+  eda: (datasetId: string, column: string, dateColumn = "", period = 0, filters: SeriesFilter[] = []) => {
     const params = new URLSearchParams();
     if (column) params.set("column", column);
     if (dateColumn) params.set("date_column", dateColumn);
     if (period >= 2) params.set("period", String(period));
+    if (filters.length) params.set("filters", JSON.stringify(filters));
     const query = params.toString();
     return request<Eda>(`/datasets/${datasetId}/eda${query ? `?${query}` : ""}`);
   },
+  series: (datasetId: string, dateColumn: string, filters: SeriesFilter[]) =>
+    request<SeriesProfile>(`/datasets/${datasetId}/series`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ date_column: dateColumn, filters }),
+    }),
   cancelJob: (jobId: string) =>
     request<TrainingJob>(`/jobs/${jobId}/cancel`, { method: "POST" }),
   deleteDataset: (datasetId: string) =>

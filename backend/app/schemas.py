@@ -3,6 +3,17 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 
+class SeriesFilter(BaseModel):
+    column: str = Field(min_length=1)
+    value: str
+    match: Literal["exact", "prefix"] = "exact"
+
+
+class SeriesRequest(BaseModel):
+    date_column: str = ""
+    filters: list[SeriesFilter] = []
+
+
 class TrainRequest(BaseModel):
     date_column: str = Field(min_length=1)
     target_column: str = Field(min_length=1)
@@ -18,6 +29,7 @@ class TrainRequest(BaseModel):
     missing_strategy: Literal["drop", "forward_fill", "interpolate"] = "forward_fill"
     patience: int = Field(default=8, ge=1, le=50)
     forecast_steps: int = Field(default=0, ge=0, le=200)
+    filters: list[SeriesFilter] = []
 
     @model_validator(mode="after")
     def validate_ratios_and_columns(self) -> "TrainRequest":
@@ -27,4 +39,6 @@ class TrainRequest(BaseModel):
             raise ValueError("No se pueden repetir variables predictoras.")
         if self.date_column == self.target_column or self.date_column in self.feature_columns:
             raise ValueError("La columna temporal no puede ser target ni variable predictora.")
+        if len({item.column for item in self.filters}) != len(self.filters):
+            raise ValueError("No se puede filtrar dos veces la misma columna.")
         return self

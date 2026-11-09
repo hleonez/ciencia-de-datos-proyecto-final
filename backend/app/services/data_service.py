@@ -185,12 +185,131 @@ def _decompose(values: np.ndarray, period: int) -> dict[str, list[float | None]]
     }
 
 
+def apply_filters(frame: pd.DataFrame, filters: list[tuple[str, str, str]]) -> pd.DataFrame:
+    """Keep rows matching every filter. match is "exact" or "prefix" (value is the leading word)."""
+    selected = frame
+    normalized: list[tuple[str, str, str]] = []
+    for item in filters:
+        if len(item) == 2:
+            column, value = item  # type: ignore[misc]
+            match = "exact"
+        else:
+            column, value, match = item
+        normalized.append((column, value, match))
+    for column, value, match in normalized:
+        if column not in selected.columns:
+            raise DatasetValidationError(f"No existe la columna de filtro «{column}».")
+        text = selected[column].astype("string").fillna("")
+        if match == "prefix":
+            selected = selected[text.str.startswith(str(value))]
+        else:
+            selected = selected[text == str(value)]
+    if filters and selected.empty:
+        raise DatasetValidationError("Esa combinación de filtros no deja ninguna fila.")
+    return selected
+
+
+def category_options(frame: pd.DataFrame, limit: int = 200) -> list[dict]:
+    """Text columns that can split one table into separate time series, with their values."""
+    categories = []
+    for item in inspect_columns(frame):
+        if item["data_type"] != "text" or item["unique_count"] < 2:
+            continue
+        counts = frame[item["name"]].astype("string").fillna("").value_counts()
+        counts = counts[counts.index != ""]
+        choices = [
+            {"value": str(value), "count": int(count), "match": "exact"}
+            for value, count in counts.head(limit).items()
+        ]
+        # Labels such as "Annual Average 2012" each occur once. The first word
+        # ("Annual", "Summer") is the grouping that still leaves enough rows.
+        if not counts.empty and int(counts.max()) < 12:
+            words = frame[item["name"]].astype("string").str.extract(r"^([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+)", expand=False)
+            grouped = frame.groupby(words.fillna(""), dropna=False).size()
+            prefixes = [
+                {"value": str(word), "count": int(count), "match": "prefix"}
+                for word, count in grouped.items()
+                if word and int(count) >= 12
+            ]
+            choices = prefixes + choices
+        categories.append({
+            "name": item["name"],
+            "unique_count": int(len(counts)),
+            "truncated": int(len(counts)) > limit,
+            "options": choices,
+        })
+    return categories
+
+
+def describe_series(
+    frame: pd.DataFrame,
+    date_column: str | None = None,
+    filters: list[tuple[str, str, str]] | None = None,
+) -> dict:
+    """Say whether the (filtered) table is one series per date and how long a lookback can be."""
+    selected = apply_filters(frame, filters or [])
+    columns = inspect_columns(selected)
+    date_names = [item["name"] for item in columns if item["data_type"] == "date"]
+    active = date_column if date_column in date_names else (date_names[0] if date_names else None)
+    unique_dates = 0
+    if active:
+        unique_dates = int(pd.to_datetime(selected[active], errors="coerce", format="mixed").nunique(dropna=True))
+    rows = int(len(selected))
+    single_series = rows > 0 and unique_dates > 0 and unique_dates >= rows * 0.9
+    # Training needs a lookback of at least 2, ten extra rows, and a training slice longer than the lookback.
+    max_lookback = min(int(rows * 0.7) - 1, rows - 10)
+    trainable = bool(single_series and max_lookback >= 2)
+    suggested = max(2, min(max_lookback, max(2, rows // 6))) if trainable else None
+    scope = ""
+    if filters:
+        described = []
+        for item in filters:
+            column, value = item[0], item[1]
+            match = item[2] if len(item) > 2 else "exact"
+            described.append(f"{column} empieza por {value}" if match == "prefix" else f"{column} = {value}")
+        scope = "Filtro: " + "; ".join(described) + ". "
+    if not active:
+        story = scope + "No hay una columna de fecha, así que no se puede armar una serie temporal."
+    elif not single_series:
+        story = (
+            f"{scope}Hay {rows} filas y solo {unique_dates} fechas distintas. "
+            "Varias observaciones comparten la misma fecha (otro indicador, otra zona u otra categoría). "
+            "Elige un valor en las columnas de texto hasta que quede una fila por fecha."
+        )
+    elif not trainable:
+        story = (
+            f"{scope}Ya es una sola serie, pero solo tiene {rows} observaciones. "
+            "Hacen falta al menos 12 en una sola serie para entrenar y evaluar sin usar el futuro."
+        )
+    else:
+        short = " La serie es corta, así que el resultado orienta sobre la tendencia; no es un pronóstico fino." if rows < 30 else ""
+        story = (
+            f"{scope}Una sola serie de {rows} observaciones ordenadas por {active}. "
+            f"El modelo mirará las {suggested} observaciones anteriores para predecir la siguiente, "
+            "y se evaluará solo en las últimas fechas, que no entran al entrenamiento."
+            f"{short}"
+        )
+    return {
+        "row_count": rows,
+        "unique_dates": unique_dates,
+        "date_column": active,
+        "single_series": single_series,
+        "trainable": trainable,
+        "suggested_lookback": suggested,
+        "minimum_rows": 12,
+        "story": story,
+        "categories": category_options(selected),
+    }
+
+
 def explore_dataset(
     frame: pd.DataFrame,
     selected_column: str | None = None,
     date_column: str | None = None,
     period: int | None = None,
+    filters: list[tuple[str, str, str]] | None = None,
 ) -> dict:
+    frame = apply_filters(frame, filters or [])
     columns = inspect_columns(frame)
     numeric_columns = [item["name"] for item in columns if item["data_type"] == "numeric"]
     numeric = frame[numeric_columns].apply(pd.to_numeric, errors="coerce")

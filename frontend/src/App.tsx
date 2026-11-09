@@ -10,10 +10,11 @@ import {
 import { AcfChart, DecompositionPanel, DistributionPanel } from "./components/EdaCharts";
 import { MetricCard } from "./components/MetricCard";
 import { ComparisonPanel, FullSeriesChart, ResidualsChart, RunHistory } from "./components/ResultsCharts";
+import { SeriesPanel } from "./components/SeriesPanel";
 import { UploadPanel } from "./components/UploadPanel";
 import { api } from "./services/api";
 import { buildSampleFile } from "./sampleData";
-import type { Dataset, Eda, RunRecord, TrainingJob, TrainingResults, TrainConfig } from "./types";
+import type { Dataset, Eda, RunRecord, SeriesFilter, SeriesProfile, TrainingJob, TrainingResults, TrainConfig } from "./types";
 
 type Section = "dashboard" | "explore" | "train" | "results";
 
@@ -39,6 +40,7 @@ const initialConfig: TrainConfig = {
   missing_strategy: "forward_fill",
   patience: 8,
   forecast_steps: 12,
+  filters: [],
 };
 
 const formatNumber = (value: number | null | undefined, digits = 3) =>
@@ -55,6 +57,9 @@ function App() {
   const [edaDateColumn, setEdaDateColumn] = useState("");
   const [edaPeriod, setEdaPeriod] = useState(0);
   const [runs, setRuns] = useState<RunRecord[]>([]);
+  const [filters, setFilters] = useState<SeriesFilter[]>([]);
+  const [profile, setProfile] = useState<SeriesProfile | null>(null);
+  const lookbackManual = useRef(false);
   const jobConfigRef = useRef<TrainConfig>(initialConfig);
   const [config, setConfig] = useState<TrainConfig>(initialConfig);
   const [jobId, setJobId] = useState<string | null>(null);
@@ -77,12 +82,30 @@ function App() {
     if (!dataset) return;
     let active = true;
     setEdaLoading(true);
-    api.eda(dataset.id, seriesColumn, edaDateColumn, edaPeriod)
+    api.eda(dataset.id, seriesColumn, edaDateColumn, edaPeriod, filters)
       .then((response) => { if (active) setEda(response); })
       .catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : "No se pudo calcular el análisis exploratorio."); })
       .finally(() => { if (active) setEdaLoading(false); });
     return () => { active = false; };
-  }, [dataset, seriesColumn, edaDateColumn, edaPeriod]);
+  }, [dataset, seriesColumn, edaDateColumn, edaPeriod, filters]);
+
+  useEffect(() => {
+    if (!dataset) return;
+    let active = true;
+    api.series(dataset.id, config.date_column, filters)
+      .then((response) => {
+        if (!active) return;
+        setProfile(response);
+        if (response.suggested_lookback && !lookbackManual.current) {
+          const horizon = Math.min(6, Math.max(0, Math.floor(response.row_count / 10)));
+          setConfig((current) => ({ ...current, lookback: response.suggested_lookback ?? current.lookback, forecast_steps: horizon, filters }));
+        } else {
+          setConfig((current) => ({ ...current, filters }));
+        }
+      })
+      .catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : "No se pudo describir la serie."); });
+    return () => { active = false; };
+  }, [dataset, config.date_column, filters]);
 
   useEffect(() => {
     if (!jobId) return;
@@ -154,6 +177,9 @@ function App() {
     setEdaDateColumn("");
     setEdaPeriod(0);
     setRuns([]);
+    setFilters([]);
+    setProfile(null);
+    lookbackManual.current = false;
     setConfig({
       ...initialConfig,
       date_column: next.columns.find((column) => column.data_type === "date")?.name ?? "",
@@ -176,6 +202,8 @@ function App() {
       setJob(null);
       setJobId(null);
       setRuns([]);
+      setFilters([]);
+      setProfile(null);
       setConfig(initialConfig);
       setNotice("");
       setSection("dashboard");
@@ -225,13 +253,22 @@ function App() {
     }
   }
 
+  function updateFilter(column: string, value: string, match: "exact" | "prefix" = "exact") {
+    lookbackManual.current = false;
+    setFilters((current) => {
+      const rest = current.filter((item) => item.column !== column);
+      return value ? [...rest, { column, value, match }] : rest;
+    });
+  }
+
   function updateConfig<K extends keyof TrainConfig>(key: K, value: TrainConfig[K]) {
+    if (key === "lookback" || key === "forecast_steps") lookbackManual.current = true;
     setConfig((current) => ({ ...current, [key]: value }));
   }
 
   const canTrain = Boolean(
     dataset && dateColumns.length && numericColumns.length && config.date_column &&
-    config.target_column && config.feature_columns.length && !busy &&
+    config.target_column && config.feature_columns.length && profile?.trainable && !busy &&
     !(job && ["queued", "running"].includes(job.status)),
   );
 
@@ -335,6 +372,9 @@ function App() {
               onNavigate={setSection}
               onRemove={removeDataset}
               removing={busy && !jobId}
+              profile={profile}
+              filters={filters}
+              onFilter={updateFilter}
             />
           )}
           {section === "explore" && dataset && (
@@ -347,6 +387,9 @@ function App() {
               dateColumn={edaDateColumn || eda?.series_date_column || ""}
               onDateColumn={setEdaDateColumn}
               onPeriod={setEdaPeriod}
+              profile={profile}
+              filters={filters}
+              onFilter={updateFilter}
             />
           )}
           {section === "train" && dataset && (
@@ -362,6 +405,9 @@ function App() {
               onStart={startTraining}
               onCancel={cancelTraining}
               onResults={() => setSection("results")}
+              profile={profile}
+              filters={filters}
+              onFilter={updateFilter}
             />
           )}
           {section === "results" && dataset && (
@@ -394,13 +440,16 @@ function PageHeading({ eyebrow, title, description, action }: {
   );
 }
 
-function Dashboard({ dataset, results, onUploaded, onNavigate, onRemove, removing }: {
+function Dashboard({ dataset, results, onUploaded, onNavigate, onRemove, removing, profile, filters, onFilter }: {
   dataset: Dataset | null;
   results: TrainingResults | null;
   onUploaded: (dataset: Dataset) => void;
   onNavigate: (section: Section) => void;
   onRemove: () => void;
   removing: boolean;
+  profile: SeriesProfile | null;
+  filters: SeriesFilter[];
+  onFilter: (column: string, value: string, match: "exact" | "prefix") => void;
 }) {
   if (!dataset) {
     return (
@@ -449,6 +498,7 @@ function Dashboard({ dataset, results, onUploaded, onNavigate, onRemove, removin
         description="El conjunto de datos está listo. Explora su calidad o configura un modelo para comenzar."
         action={<button type="button" className="secondary-button" onClick={onRemove} disabled={removing}><Trash2 size={16} />{removing ? "Eliminando…" : "Eliminar archivo"}</button>}
       />
+      <SeriesPanel profile={profile} filters={filters} onFilter={onFilter} />
       <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard label="Registros" value={formatNumber(dataset.row_count, 0)} hint="Filas detectadas" icon={Database} />
         <MetricCard label="Variables" value={formatNumber(dataset.column_count, 0)} hint="Columnas detectadas" icon={Layers3} tone="violet" />
@@ -552,15 +602,17 @@ function PreviewTable({ preview }: { preview: Array<Record<string, string | numb
   );
 }
 
-function ExploreSection({ dataset, eda, loading, seriesColumn, onSeriesColumn, dateColumn, onDateColumn, onPeriod }: {
+function ExploreSection({ dataset, eda, loading, seriesColumn, onSeriesColumn, dateColumn, onDateColumn, onPeriod, profile, filters, onFilter }: {
   dataset: Dataset; eda: Eda | null; loading: boolean; seriesColumn: string;
   onSeriesColumn: (column: string) => void;
   dateColumn: string; onDateColumn: (column: string) => void; onPeriod: (period: number) => void;
+  profile: SeriesProfile | null; filters: SeriesFilter[]; onFilter: (column: string, value: string, match: "exact" | "prefix") => void;
 }) {
   const numericColumns = dataset.columns.filter((column) => column.data_type === "numeric");
   return (
     <>
       <PageHeading eyebrow="Exploración de datos" title="Conoce tu serie temporal" description="Revisa estadísticas, calidad, correlaciones y la evolución de las variables antes de modelar." />
+      <SeriesPanel profile={profile} filters={filters} onFilter={onFilter} />
       <div className="mb-6 grid gap-4 sm:grid-cols-3">
         <MetricCard label="Valores nulos" value={formatNumber(eda?.null_count ?? dataset.null_count, 0)} hint="Registros por completar" icon={CircleAlert} tone="amber" />
         <MetricCard label="Filas duplicadas" value={formatNumber(eda?.duplicate_count ?? dataset.duplicate_count, 0)} hint="Duplicados exactos" icon={Copy} tone="violet" />
@@ -651,14 +703,13 @@ function CorrelationTable({ correlation }: { correlation: Eda["correlation"] }) 
   );
 }
 
-function TrainSection({ dataset, numericColumns, dateColumns, config, job, canTrain, busy, onConfig, onStart, onCancel, onResults }: {
+function TrainSection({ dataset, numericColumns, dateColumns, config, job, canTrain, busy, onConfig, onStart, onCancel, onResults, profile, filters, onFilter }: {
   dataset: Dataset; numericColumns: string[]; dateColumns: string[];
   config: TrainConfig; job: TrainingJob | null; canTrain: boolean; busy: boolean;
   onConfig: <K extends keyof TrainConfig>(key: K, value: TrainConfig[K]) => void;
   onStart: () => void; onCancel: () => void; onResults: () => void;
+  profile: SeriesProfile | null; filters: SeriesFilter[]; onFilter: (column: string, value: string, match: "exact" | "prefix") => void;
 }) {
-  const dateUnique = dataset.columns.find((column) => column.name === config.date_column)?.unique_count ?? dataset.row_count;
-  const repeatedDates = dataset.row_count >= 20 && dateUnique < dataset.row_count * 0.5;
   const ratioTotal = config.train_ratio + config.validation_ratio + config.test_ratio;
   const ratioValid = Math.abs(ratioTotal - 1) < 0.001;
   const running = Boolean(job && ["queued", "running"].includes(job.status));
@@ -672,7 +723,7 @@ function TrainSection({ dataset, numericColumns, dateColumns, config, job, canTr
     <>
       <PageHeading eyebrow="Configuración y entrenamiento" title="Configura tu modelo LSTM" description={`Define las variables y parámetros para entrenar un modelo con ${dataset.filename}.`} />
       {(!dateColumns.length || !numericColumns.length) && <div role="alert" className="mb-6 rounded-xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-800">El archivo debe tener una columna temporal detectable y al menos una columna numérica para entrenar.</div>}
-      {repeatedDates && <div role="alert" className="mb-6 rounded-xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-800">La columna «{config.date_column}» solo tiene {dateUnique.toLocaleString("es")} fechas distintas en {dataset.row_count.toLocaleString("es")} filas: el archivo mezcla varias series (por ejemplo, distintos indicadores o zonas). Una LSTM necesita una sola serie por fecha, así que los resultados no serían fiables. Filtra una serie antes de cargar el archivo.</div>}
+      <SeriesPanel profile={profile} filters={filters} onFilter={onFilter} />
       <div className="grid items-start gap-6 xl:grid-cols-[1fr_0.8fr]">
         <div className="space-y-6">
           <div className="card">

@@ -61,6 +61,23 @@ export type Boxplot = {
   outliers: number[];
 };
 export type Metrics = { mae: number; mse: number; rmse: number; r2: number | null };
+export type SeriesFilter = { column: string; value: string; match?: "exact" | "prefix" };
+export type SeriesProfile = {
+  row_count: number;
+  unique_dates: number;
+  date_column: string | null;
+  single_series: boolean;
+  trainable: boolean;
+  suggested_lookback: number | null;
+  minimum_rows: number;
+  story: string;
+  categories: Array<{
+    name: string;
+    unique_count: number;
+    truncated: boolean;
+    options: Array<{ value: string; count: number; match: "exact" | "prefix" }>;
+  }>;
+};
 export type TrainConfig = {
   date_column: string;
   target_column: string;
@@ -76,6 +93,7 @@ export type TrainConfig = {
   missing_strategy: "drop" | "forward_fill" | "interpolate";
   patience: number;
   forecast_steps: number;
+  filters: SeriesFilter[];
 };
 export type TrainingJob = {
   id: string;

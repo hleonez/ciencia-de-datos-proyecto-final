@@ -1,5 +1,6 @@
 import csv
 import io
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -8,10 +9,11 @@ from fastapi.responses import StreamingResponse
 
 from app.core.config import MAX_UPLOAD_SIZE_BYTES, MAX_UPLOAD_SIZE_MB
 from app.core.storage import Dataset, dataset_store
-from app.schemas import TrainRequest
+from app.schemas import SeriesRequest, TrainRequest
 from app.services.data_service import (
     DatasetValidationError,
     dataset_summary,
+    describe_series,
     explore_dataset,
     read_dataset,
 )
@@ -107,16 +109,35 @@ def get_dataset(dataset_id: str):
     }
 
 
+def _parse_filters(raw: str | None) -> list[tuple[str, str]]:
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=422, detail="El filtro no tiene un formato válido.") from exc
+    if not isinstance(parsed, list):
+        raise HTTPException(status_code=422, detail="El filtro debe ser una lista de columnas y valores.")
+    try:
+        return [
+            (str(item["column"]), str(item["value"]), str(item.get("match", "exact")))
+            for item in parsed
+        ]
+    except (KeyError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail="Cada filtro necesita una columna y un valor.") from exc
+
+
 @router.get("/datasets/{dataset_id}/eda")
 def get_eda(
     dataset_id: str,
     column: str | None = Query(default=None),
     date_column: str | None = Query(default=None),
     period: int | None = Query(default=None, ge=2, le=1000),
+    filters: str | None = Query(default=None),
 ):
     dataset = _require_dataset(dataset_id)
     try:
-        return explore_dataset(read_dataset(dataset.path), column, date_column, period)
+        return explore_dataset(read_dataset(dataset.path), column, date_column, period, _parse_filters(filters))
     except DatasetValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -126,6 +147,19 @@ def delete_dataset(dataset_id: str):
     if not dataset_store.delete(dataset_id):
         raise HTTPException(status_code=404, detail="No se encontró el conjunto de datos.")
     return None
+
+
+@router.post("/datasets/{dataset_id}/series")
+def describe_dataset_series(dataset_id: str, request: SeriesRequest):
+    dataset = _require_dataset(dataset_id)
+    try:
+        return describe_series(
+            read_dataset(dataset.path),
+            request.date_column or None,
+            [(item.column, item.value, item.match) for item in request.filters],
+        )
+    except DatasetValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/datasets/{dataset_id}/train", status_code=202)

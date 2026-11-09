@@ -6,7 +6,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.preprocessing import MinMaxScaler
 
 from app.schemas import TrainRequest
-from app.services.data_service import DatasetValidationError
+from app.services.data_service import DatasetValidationError, apply_filters, describe_series
 
 MAX_FULL_SERIES_POINTS = 1000
 
@@ -81,10 +81,42 @@ def forecast_future(model, data: dict, request: TrainRequest, steps: int) -> tup
     return forecast, note
 
 
+def _scope_sentence(request: TrainRequest) -> str:
+    if not request.filters:
+        return "Se modeló la serie completa."
+    details = "; ".join(
+        f"{item.column} empieza por {item.value}" if item.match == "prefix" else f"{item.column} = {item.value}"
+        for item in request.filters
+    )
+    return f"Se modeló solo la serie {details}."
+
+
+def _result_story(request: TrainRequest, metrics: dict, baseline: dict, train_count: int, test_count: int, forecast_count: int) -> str:
+    """Plain-language account of what was predicted and whether it beat the naive model."""
+    rmse, base = metrics["rmse"], baseline["rmse"]
+    if base > 0 and rmse < base:
+        verdict = f"La LSTM reduce ese error un {(1 - rmse / base) * 100:.1f} %."
+    elif base > 0:
+        verdict = "La LSTM no mejora ese punto de comparación: repetir el valor anterior predice mejor esta serie."
+    else:
+        verdict = "No hay un punto de comparación porque el modelo ingenuo no tiene error."
+    forecast = f" Además se proyectan {forecast_count} pasos después de la última fecha observada." if forecast_count else ""
+    return (
+        f"{_scope_sentence(request)} "
+        f"Aprendió con {train_count} secuencias y se puso a prueba en {test_count} fechas posteriores, que no vio durante el entrenamiento. "
+        f"El error (RMSE) es {rmse:.3f}, frente a {base:.3f} de predecir cada fecha con el valor anterior. "
+        f"{verdict}{forecast}"
+    )
+
+
 def _impute_and_split(frame: pd.DataFrame, request: TrainRequest):
+    filtered = apply_filters(frame, [(item.column, item.value, item.match) for item in request.filters])
+    profile = describe_series(filtered, request.date_column)
+    if not profile["trainable"]:
+        raise DatasetValidationError(profile["story"])
     # The target may also be a predictor (its own history); keep each column once.
     numeric_columns = list(dict.fromkeys([*request.feature_columns, request.target_column]))
-    selected = frame[[request.date_column, *numeric_columns]].copy()
+    selected = filtered[[request.date_column, *numeric_columns]].copy()
     selected[request.date_column] = pd.to_datetime(
         selected[request.date_column], errors="coerce", format="mixed"
     )
@@ -279,8 +311,7 @@ def train_model(
         "split_dates": data["split_dates"],
         "forecast": forecast,
         "forecast_note": forecast_note,
-        "summary": (
-            f"Modelo LSTM entrenado con {len(data['X_train'])} secuencias de entrenamiento. "
-            f"Evaluado sobre {len(predictions)} observaciones cronológicas de prueba."
+        "summary": _result_story(
+            request, metrics, baseline_metrics, len(data["X_train"]), len(predictions), len(forecast)
         ),
     }

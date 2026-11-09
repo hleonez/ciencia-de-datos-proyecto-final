@@ -35,7 +35,8 @@ backend/
 |---|---|---|
 | `POST` | `/datasets` | Validar y cargar CSV/XLSX (límite configurable) |
 | `GET` | `/datasets/{dataset_id}` | Metadatos, columnas, calidad y vista previa |
-| `GET` | `/datasets/{dataset_id}/eda` | Estadísticas, correlaciones, serie, histogramas, boxplots, ACF y descomposición. Parámetros opcionales: `column`, `date_column`, `period` |
+| `GET` | `/datasets/{dataset_id}/eda` | Estadísticas, correlaciones, serie, histogramas, boxplots, ACF y descomposición. Parámetros opcionales: `column`, `date_column`, `period`, `filters` (JSON) |
+| `POST` | `/datasets/{dataset_id}/series` | Dice si los filtros dejan una sola serie por fecha, cuántas filas quedan y qué lookback cabe |
 | `DELETE` | `/datasets/{dataset_id}` | Eliminar archivo y metadatos temporales |
 | `POST` | `/datasets/{dataset_id}/train` | Iniciar entrenamiento asíncrono (`forecast_steps` opcional, 0–200) |
 | `GET` | `/jobs/{job_id}` | Estado y progreso del entrenamiento |
