@@ -56,6 +56,18 @@ def test_eda_reports_histogram_boxplot_acf_and_seasonal_decomposition():
     assert point["observed"] is not None and point["seasonal"] is not None
 
 
+def test_fully_empty_column_is_not_classified_as_numeric():
+    from app.services.data_service import inspect_columns
+
+    frame = seasonal_frame()
+    frame["Message"] = np.nan
+
+    kinds = {item["name"]: item["data_type"] for item in inspect_columns(frame)}
+
+    assert kinds["Message"] == "text"
+    assert kinds["value"] == "numeric" and kinds["timestamp"] == "date"
+
+
 def test_eda_boxplot_counts_outliers():
     frame = seasonal_frame()
     frame.loc[10, "value"] = 10_000

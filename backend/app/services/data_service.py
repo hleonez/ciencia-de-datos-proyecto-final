@@ -71,7 +71,8 @@ def inspect_columns(frame: pd.DataFrame) -> list[dict]:
         if not pd.api.types.is_numeric_dtype(series) and len(non_null):
             parsed_numeric = pd.to_numeric(non_null, errors="coerce")
             numeric_ratio = float(parsed_numeric.notna().mean())
-        is_numeric = pd.api.types.is_numeric_dtype(series) or numeric_ratio >= 0.8
+        # A column with no values at all (e.g. an empty "Message" column) is not usable as numeric.
+        is_numeric = len(non_null) > 0 and (pd.api.types.is_numeric_dtype(series) or numeric_ratio >= 0.8)
         if is_date:
             data_type = "date"
             invalid_count = int(parsed_dates.isna().sum())

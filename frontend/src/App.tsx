@@ -145,7 +145,11 @@ function App() {
     setJobId(null);
     setError("");
     setNotice("");
-    const numbers = next.columns.filter((column) => column.data_type === "numeric").map((column) => column.name);
+    const numericNames = next.columns.filter((column) => column.data_type === "numeric");
+    // Identifier-like columns (one value per row, or named "...id") carry no signal for a forecast.
+    const measures = numericNames.filter((column) =>
+      !(next.row_count > 10 && column.unique_count === next.row_count) && !/(^|[\s_-])id$/i.test(column.name));
+    const numbers = (measures.length ? measures : numericNames).map((column) => column.name);
     setSeriesColumn(numbers[0] ?? "");
     setEdaDateColumn("");
     setEdaPeriod(0);
@@ -653,6 +657,8 @@ function TrainSection({ dataset, numericColumns, dateColumns, config, job, canTr
   onConfig: <K extends keyof TrainConfig>(key: K, value: TrainConfig[K]) => void;
   onStart: () => void; onCancel: () => void; onResults: () => void;
 }) {
+  const dateUnique = dataset.columns.find((column) => column.name === config.date_column)?.unique_count ?? dataset.row_count;
+  const repeatedDates = dataset.row_count >= 20 && dateUnique < dataset.row_count * 0.5;
   const ratioTotal = config.train_ratio + config.validation_ratio + config.test_ratio;
   const ratioValid = Math.abs(ratioTotal - 1) < 0.001;
   const running = Boolean(job && ["queued", "running"].includes(job.status));
@@ -666,6 +672,7 @@ function TrainSection({ dataset, numericColumns, dateColumns, config, job, canTr
     <>
       <PageHeading eyebrow="Configuración y entrenamiento" title="Configura tu modelo LSTM" description={`Define las variables y parámetros para entrenar un modelo con ${dataset.filename}.`} />
       {(!dateColumns.length || !numericColumns.length) && <div role="alert" className="mb-6 rounded-xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-800">El archivo debe tener una columna temporal detectable y al menos una columna numérica para entrenar.</div>}
+      {repeatedDates && <div role="alert" className="mb-6 rounded-xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-800">La columna «{config.date_column}» solo tiene {dateUnique.toLocaleString("es")} fechas distintas en {dataset.row_count.toLocaleString("es")} filas: el archivo mezcla varias series (por ejemplo, distintos indicadores o zonas). Una LSTM necesita una sola serie por fecha, así que los resultados no serían fiables. Filtra una serie antes de cargar el archivo.</div>}
       <div className="grid items-start gap-6 xl:grid-cols-[1fr_0.8fr]">
         <div className="space-y-6">
           <div className="card">
