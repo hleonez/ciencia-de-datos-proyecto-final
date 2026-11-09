@@ -34,8 +34,16 @@ export const api = {
     body.append("file", file);
     return request<Dataset>("/datasets", { method: "POST", body });
   },
-  eda: (datasetId: string, column: string) =>
-    request<Eda>(`/datasets/${datasetId}/eda${column ? `?column=${encodeURIComponent(column)}` : ""}`),
+  eda: (datasetId: string, column: string, dateColumn = "", period = 0) => {
+    const params = new URLSearchParams();
+    if (column) params.set("column", column);
+    if (dateColumn) params.set("date_column", dateColumn);
+    if (period >= 2) params.set("period", String(period));
+    const query = params.toString();
+    return request<Eda>(`/datasets/${datasetId}/eda${query ? `?${query}` : ""}`);
+  },
+  cancelJob: (jobId: string) =>
+    request<TrainingJob>(`/jobs/${jobId}/cancel`, { method: "POST" }),
   deleteDataset: (datasetId: string) =>
     request<void>(`/datasets/${datasetId}`, { method: "DELETE" }),
   startTraining: (datasetId: string, config: TrainConfig) =>

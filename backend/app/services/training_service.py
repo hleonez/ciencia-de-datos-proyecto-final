@@ -39,7 +39,7 @@ def _full_series(prepared: pd.DataFrame, request: TrainRequest, train_end: int, 
 
 
 def forecast_future(model, data: dict, request: TrainRequest, steps: int) -> tuple[list[dict], str | None]:
-    """Recursive multi-step forecast. Other predictors are held at their last observed value."""
+    """Recursive multi-step forecast. Other predictors repeat their last observed window cyclically."""
     if steps <= 0:
         return [], None
     if request.target_column not in request.feature_columns:
@@ -52,12 +52,15 @@ def forecast_future(model, data: dict, request: TrainRequest, steps: int) -> tup
 
     target_index = request.feature_columns.index(request.target_column)
     window = np.array(data["last_window"], dtype=np.float32)
+    exogenous_cycle = window.copy()
     scaled_predictions = []
-    for _ in range(steps):
+    for step_index in range(steps):
         output = model(window[np.newaxis, ...], training=False)
         value = float(np.asarray(output).reshape(-1)[0])
         scaled_predictions.append(value)
-        next_row = window[-1].copy()
+        # Future values of the other predictors are unknown: reuse the value observed one
+        # lookback window earlier, which keeps cycles (e.g. daily temperature) instead of freezing them.
+        next_row = exogenous_cycle[step_index % len(exogenous_cycle)].copy()
         next_row[target_index] = value
         window = np.vstack([window[1:], next_row])
 
@@ -70,8 +73,8 @@ def forecast_future(model, data: dict, request: TrainRequest, steps: int) -> tup
         for index, value in enumerate(actual)
     ]
     note = (
-        "Pronóstico recursivo: las demás variables predictoras se mantienen en su último valor observado "
-        "y el intervalo temporal se estima con la mediana de las diferencias de fecha."
+        "Pronóstico recursivo: las demás variables predictoras repiten cíclicamente su última ventana observada "
+        "(su futuro real se desconoce) y el intervalo temporal se estima con la mediana de las diferencias de fecha."
         if len(request.feature_columns) > 1
         else "Pronóstico recursivo: el intervalo temporal se estima con la mediana de las diferencias de fecha."
     )

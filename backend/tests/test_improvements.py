@@ -122,6 +122,25 @@ def test_forecast_is_recursive_dated_and_in_original_units():
     assert note
 
 
+def test_forecast_repeats_other_predictors_cyclically_instead_of_freezing_them():
+    request = make_request(feature_columns=["value", "other"], lookback=6)
+    data = prepare_sequences(seasonal_frame(), request)
+    seen = []
+
+    class SpyModel(FakeModel):
+        def __call__(self, window, training=False):
+            seen.append(np.array(window[0]))
+            return super().__call__(window, training)
+
+    forecast_future(SpyModel(), data, request, 4)
+
+    cycle = np.array(data["last_window"])
+    # Step k+1 sees, in its newest row, the "other" value from k rows into the original window.
+    for step in range(1, 4):
+        assert np.isclose(seen[step][-1][1], cycle[step - 1][1], atol=1e-6)
+    assert len({round(float(row[-1][1]), 6) for row in seen[1:]}) > 1
+
+
 def test_forecast_requires_target_among_predictors_and_zero_steps_is_empty():
     request = make_request(feature_columns=["other"])
     data = prepare_sequences(seasonal_frame(), request)

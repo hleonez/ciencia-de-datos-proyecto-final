@@ -35,12 +35,19 @@ backend/
 |---|---|---|
 | `POST` | `/datasets` | Validar y cargar CSV/XLSX (límite configurable) |
 | `GET` | `/datasets/{dataset_id}` | Metadatos, columnas, calidad y vista previa |
-| `GET` | `/datasets/{dataset_id}/eda` | Estadísticas, correlaciones y datos para gráficos |
+| `GET` | `/datasets/{dataset_id}/eda` | Estadísticas, correlaciones, serie, histogramas, boxplots, ACF y descomposición. Parámetros opcionales: `column`, `date_column`, `period` |
 | `DELETE` | `/datasets/{dataset_id}` | Eliminar archivo y metadatos temporales |
-| `POST` | `/datasets/{dataset_id}/train` | Iniciar entrenamiento asíncrono |
+| `POST` | `/datasets/{dataset_id}/train` | Iniciar entrenamiento asíncrono (`forecast_steps` opcional, 0–200) |
 | `GET` | `/jobs/{job_id}` | Estado y progreso del entrenamiento |
-| `GET` | `/jobs/{job_id}/results` | Métricas, predicciones y pérdidas al finalizar |
-| `GET` | `/jobs/{job_id}/predictions.csv` | Descargar predicciones |
+| `POST` | `/jobs/{job_id}/cancel` | Cancelar un entrenamiento en cola o en curso (se detiene al terminar la época actual) |
+| `GET` | `/jobs/{job_id}/results` | Métricas de la LSTM y del modelo ingenuo, predicciones, serie completa, tramos, pronóstico futuro y pérdidas |
+| `GET` | `/jobs/{job_id}/predictions.csv` | Descargar predicciones (`date,actual,predicted,naive`) |
+
+### Evaluación y pronóstico
+
+- **Modelo ingenuo:** cada valor de prueba se predice con el valor observado anterior. Los resultados comparan MAE, RMSE y R² de ambos y explican si la LSTM aporta algo.
+- **Pronóstico futuro:** recursivo, paso a paso. Requiere que el target esté entre las variables predictoras. Como el futuro de las demás variables es desconocido, estas repiten cíclicamente su última ventana observada; el intervalo temporal se estima con la mediana de las diferencias de fecha.
+- **Reproducibilidad:** el entrenamiento no fija semilla, así que dos ejecuciones con la misma configuración pueden dar métricas distintas. El historial de la sesión permite compararlas.
 
 Los errores de entrada usan respuestas HTTP 4xx con mensajes accionables. Las ejecuciones fallidas se reportan como estado `failed`, sin resultados de éxito sustitutos.
 
@@ -59,8 +66,10 @@ Backend, desde `backend/`:
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --reload-dir app
 ```
+
+`--reload-dir app` es importante: sin él, `uvicorn` también vigila `.venv`, se reinicia cuando TensorFlow genera archivos al importarse y borra de la memoria los datasets y trabajos en curso. Si editas código con un entrenamiento activo, el servidor espera a que termine antes de recargar.
 
 La documentación interactiva está en `http://localhost:8000/docs`. El límite de carga y el tiempo de vida temporal se pueden configurar con `MAX_UPLOAD_SIZE_MB` y `DATASET_TTL_HOURS`.
 
@@ -75,4 +84,4 @@ La URL del backend se configura con `VITE_API_URL` (por defecto `http://localhos
 
 ## Pruebas
 
-Desde `backend/`, ejecutar `pytest`. Las pruebas cubren validación, división cronológica, prevención de fuga en escalado, API y un entrenamiento real de una época con TensorFlow sobre datos de prueba generados dentro de la suite.
+Desde `backend/` (con el entorno virtual activo), ejecutar `pytest`. Las pruebas cubren validación, división cronológica, prevención de fuga en escalado, API y un entrenamiento real de una época con TensorFlow sobre datos de prueba generados dentro de la suite.

@@ -15,12 +15,14 @@ Engram mirror: pending (project not registered in Engram store).
 
 ## Tasks
 
-- T1 (S1,S6) backend+frontend fixes - route: inline - status: pending
-- T2 (S2,S3,S6) training service: baseline, full series, forecast - route: inline - status: pending
-- T3 (S4,S6) EDA service additions - route: inline - status: pending
-- T4 (S5,S6) cancel endpoint and job state - route: inline - status: pending
-- T5 (S1-S5) frontend: types, api, new charts and sections - route: inline - status: pending
+- T1 (S1,S6) target default predictor, dynamic split label, EDA date column - route: inline - status: done (commit 8512de3 backend, frontend commit below)
+- T2 (S2,S3,S6) training service: baseline, full series, forecast - route: inline - status: done, 23 pytest pass, forecast checked on live API
+- T3 (S4,S6) EDA service additions - route: inline - status: done, checked in browser
+- T4 (S5,S6) cancel endpoint and job state - route: inline - status: done in API tests; UI button compiled but not clicked
+- T5 (S1-S5) frontend: types, api, new charts and sections - route: inline - status: done, `npm run build` ok, flow checked in browser
 
 ## Log
 
+- L2 (2026-11-08): found while testing: `frame[[date, *features, target]]` duplicated the column when the target was also a predictor (training crashed); fixed by deduplicating. `uvicorn --reload` watched `.venv` and wiped in-memory datasets; README now uses `--reload-dir app`.
+- L3 (2026-11-08): forecast first froze other predictors at their last value and diverged upward; changed to cyclic reuse of the last window (test added).
 - L1 (2026-11-08): "bueno vamos a realizar esas mejoras" (plan A-E: corregir, evaluación honesta, pronóstico, EDA ampliado, pulido)

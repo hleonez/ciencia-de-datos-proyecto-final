@@ -1,16 +1,19 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Activity, ArrowDownToLine, BarChart3, Check, ChevronRight, CircleAlert, Copy,
   Clock3, Database, FileSpreadsheet, Gauge, Layers3, LoaderCircle, Play,
-  RefreshCw, Settings2, ShieldCheck, Sparkles, Target, Trash2, TrendingUp,
+  RefreshCw, Settings2, ShieldCheck, Sparkles, Square, Target, Trash2, TrendingUp,
 } from "lucide-react";
 import {
   CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
+import { AcfChart, DecompositionPanel, DistributionPanel } from "./components/EdaCharts";
 import { MetricCard } from "./components/MetricCard";
+import { ComparisonPanel, FullSeriesChart, ResidualsChart, RunHistory } from "./components/ResultsCharts";
 import { UploadPanel } from "./components/UploadPanel";
 import { api } from "./services/api";
-import type { Dataset, Eda, TrainingJob, TrainingResults, TrainConfig } from "./types";
+import { buildSampleFile } from "./sampleData";
+import type { Dataset, Eda, RunRecord, TrainingJob, TrainingResults, TrainConfig } from "./types";
 
 type Section = "dashboard" | "explore" | "train" | "results";
 
@@ -35,6 +38,7 @@ const initialConfig: TrainConfig = {
   test_ratio: 0.15,
   missing_strategy: "forward_fill",
   patience: 8,
+  forecast_steps: 12,
 };
 
 const formatNumber = (value: number | null | undefined, digits = 3) =>
@@ -48,6 +52,10 @@ function App() {
   const [eda, setEda] = useState<Eda | null>(null);
   const [edaLoading, setEdaLoading] = useState(false);
   const [seriesColumn, setSeriesColumn] = useState("");
+  const [edaDateColumn, setEdaDateColumn] = useState("");
+  const [edaPeriod, setEdaPeriod] = useState(0);
+  const [runs, setRuns] = useState<RunRecord[]>([]);
+  const jobConfigRef = useRef<TrainConfig>(initialConfig);
   const [config, setConfig] = useState<TrainConfig>(initialConfig);
   const [jobId, setJobId] = useState<string | null>(null);
   const [job, setJob] = useState<TrainingJob | null>(null);
@@ -69,12 +77,12 @@ function App() {
     if (!dataset) return;
     let active = true;
     setEdaLoading(true);
-    api.eda(dataset.id, seriesColumn)
+    api.eda(dataset.id, seriesColumn, edaDateColumn, edaPeriod)
       .then((response) => { if (active) setEda(response); })
       .catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : "No se pudo calcular el análisis exploratorio."); })
       .finally(() => { if (active) setEdaLoading(false); });
     return () => { active = false; };
-  }, [dataset, seriesColumn]);
+  }, [dataset, seriesColumn, edaDateColumn, edaPeriod]);
 
   useEffect(() => {
     if (!jobId) return;
@@ -86,8 +94,26 @@ function App() {
         if (!active) return;
         setJob(status);
         if (status.status === "completed") {
-          setResults(await api.results(jobId));
-          if (active) setSection("results");
+          const finished = await api.results(jobId);
+          if (!active) return;
+          const used = jobConfigRef.current;
+          setResults(finished);
+          setRuns((current) => [...current, {
+            id: jobId,
+            finishedAt: new Date().toLocaleTimeString("es"),
+            target: used.target_column,
+            predictors: used.feature_columns.length,
+            lookback: used.lookback,
+            epochs: finished.losses.train.length,
+            units: used.units,
+            metrics: finished.metrics,
+            baseline: finished.baseline_metrics,
+          }]);
+          setSection("results");
+          return;
+        }
+        if (status.status === "cancelled") {
+          setNotice("El entrenamiento se canceló. No se generaron resultados.");
           return;
         }
         if (status.status === "failed") {
@@ -121,11 +147,15 @@ function App() {
     setNotice("");
     const numbers = next.columns.filter((column) => column.data_type === "numeric").map((column) => column.name);
     setSeriesColumn(numbers[0] ?? "");
+    setEdaDateColumn("");
+    setEdaPeriod(0);
+    setRuns([]);
     setConfig({
       ...initialConfig,
       date_column: next.columns.find((column) => column.data_type === "date")?.name ?? "",
       target_column: numbers[0] ?? "",
-      feature_columns: numbers.length > 1 ? numbers.slice(1) : numbers,
+      // The target's own history is the strongest predictor of a time series, so it is included by default.
+      feature_columns: numbers,
     });
     setSection("dashboard");
   }
@@ -141,6 +171,7 @@ function App() {
       setResults(null);
       setJob(null);
       setJobId(null);
+      setRuns([]);
       setConfig(initialConfig);
       setNotice("");
       setSection("dashboard");
@@ -158,6 +189,7 @@ function App() {
     setNotice("");
     try {
       const response = await api.startTraining(dataset.id, config);
+      jobConfigRef.current = config;
       setJobId(response.job_id);
       setJob({
         id: response.job_id,
@@ -177,6 +209,15 @@ function App() {
       setError(reason instanceof Error ? reason.message : "No se pudo iniciar el entrenamiento.");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function cancelTraining() {
+    if (!jobId) return;
+    try {
+      await api.cancelJob(jobId);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "No se pudo cancelar el entrenamiento.");
     }
   }
 
@@ -299,6 +340,9 @@ function App() {
               loading={edaLoading}
               seriesColumn={seriesColumn}
               onSeriesColumn={setSeriesColumn}
+              dateColumn={edaDateColumn || eda?.series_date_column || ""}
+              onDateColumn={setEdaDateColumn}
+              onPeriod={setEdaPeriod}
             />
           )}
           {section === "train" && dataset && (
@@ -312,12 +356,14 @@ function App() {
               busy={busy}
               onConfig={updateConfig}
               onStart={startTraining}
+              onCancel={cancelTraining}
               onResults={() => setSection("results")}
             />
           )}
           {section === "results" && dataset && (
             <ResultsSection
               results={results}
+              runs={runs}
               jobId={jobId}
               target={config.target_column}
               onTrain={() => setSection("train")}
@@ -363,6 +409,7 @@ function Dashboard({ dataset, results, onUploaded, onNavigate, onRemove, removin
               <span className="hidden rounded-xl bg-blue-50 p-3 text-blue-600 sm:grid"><Database size={20} /></span>
             </div>
             <UploadPanel onUploaded={onUploaded} />
+            <SampleDatasetButton onUploaded={onUploaded} />
           </div>
           <div className="space-y-4">
             <div className="card">
@@ -457,6 +504,31 @@ function Dashboard({ dataset, results, onUploaded, onNavigate, onRemove, removin
   );
 }
 
+function SampleDatasetButton({ onUploaded }: { onUploaded: (dataset: Dataset) => void }) {
+  const [loading, setLoading] = useState(false);
+  const [failure, setFailure] = useState("");
+  async function load() {
+    setLoading(true);
+    setFailure("");
+    try {
+      onUploaded(await api.upload(buildSampleFile()));
+    } catch (reason) {
+      setFailure(reason instanceof Error ? reason.message : "No se pudo cargar el ejemplo.");
+    } finally {
+      setLoading(false);
+    }
+  }
+  return (
+    <div className="mt-4 flex flex-col items-center gap-2 text-center">
+      <button type="button" className="secondary-button" onClick={() => void load()} disabled={loading}>
+        <Sparkles size={16} />{loading ? "Cargando ejemplo…" : "Probar con un dataset de ejemplo"}
+      </button>
+      <p className="text-xs text-muted">Demanda horaria sintética con ciclo diario, temperatura y humedad (480 registros).</p>
+      {failure && <p role="alert" className="rounded-lg bg-red-50 px-4 py-2 text-sm text-red-700">{failure}</p>}
+    </div>
+  );
+}
+
 function SmallMetric({ label, value }: { label: string; value: string }) {
   return <div className="rounded-xl bg-slate-50 p-3"><p className="text-xs text-muted">{label}</p><p className="mt-1 font-semibold text-ink">{value}</p></div>;
 }
@@ -476,9 +548,10 @@ function PreviewTable({ preview }: { preview: Array<Record<string, string | numb
   );
 }
 
-function ExploreSection({ dataset, eda, loading, seriesColumn, onSeriesColumn }: {
+function ExploreSection({ dataset, eda, loading, seriesColumn, onSeriesColumn, dateColumn, onDateColumn, onPeriod }: {
   dataset: Dataset; eda: Eda | null; loading: boolean; seriesColumn: string;
   onSeriesColumn: (column: string) => void;
+  dateColumn: string; onDateColumn: (column: string) => void; onPeriod: (period: number) => void;
 }) {
   const numericColumns = dataset.columns.filter((column) => column.data_type === "numeric");
   return (
@@ -493,9 +566,16 @@ function ExploreSection({ dataset, eda, loading, seriesColumn, onSeriesColumn }:
         <div className="card min-w-0">
           <div className="mb-5 flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
             <div><h2 className="section-title">Comportamiento temporal</h2><p className="mt-1 text-sm text-muted">{eda?.series_date_column ? `Ordenado por ${eda.series_date_column}` : "Se requiere una columna de fecha para mostrar la serie."}</p></div>
-            <select className="field !w-auto min-w-40" value={seriesColumn} onChange={(event) => onSeriesColumn(event.target.value)} aria-label="Variable para el gráfico">
-              {numericColumns.map((column) => <option key={column.name} value={column.name}>{column.name}</option>)}
-            </select>
+            <div className="flex flex-wrap gap-2">
+              {(eda?.date_columns.length ?? 0) > 1 && (
+                <select className="field !w-auto min-w-40" value={dateColumn} onChange={(event) => onDateColumn(event.target.value)} aria-label="Columna de fecha">
+                  {eda?.date_columns.map((column) => <option key={column} value={column}>{column}</option>)}
+                </select>
+              )}
+              <select className="field !w-auto min-w-40" value={seriesColumn} onChange={(event) => onSeriesColumn(event.target.value)} aria-label="Variable para el gráfico">
+                {numericColumns.map((column) => <option key={column.name} value={column.name}>{column.name}</option>)}
+              </select>
+            </div>
           </div>
           <div className="h-[300px] w-full">
             {loading ? <ChartLoading /> : eda?.series.length ? (
@@ -523,6 +603,15 @@ function ExploreSection({ dataset, eda, loading, seriesColumn, onSeriesColumn }:
           </div>
         </div>
       </div>
+      {eda && (
+        <div className="mt-6 grid gap-6 xl:grid-cols-2">
+          <DistributionPanel column={seriesColumn} bins={eda.histograms[seriesColumn]} box={eda.boxplots[seriesColumn]} />
+          <AcfChart acf={eda.acf} column={seriesColumn} />
+          <div className="xl:col-span-2">
+            <DecompositionPanel decomposition={eda.decomposition} detectedPeriod={eda.period} onPeriod={onPeriod} />
+          </div>
+        </div>
+      )}
       <div className="card mt-6">
         <div className="mb-4"><h2 className="section-title">Estadística descriptiva</h2><p className="mt-1 text-sm text-muted">Resumen calculado en el backend para columnas numéricas</p></div>
         {eda?.statistics && Object.keys(eda.statistics).length ? (
@@ -558,11 +647,11 @@ function CorrelationTable({ correlation }: { correlation: Eda["correlation"] }) 
   );
 }
 
-function TrainSection({ dataset, numericColumns, dateColumns, config, job, canTrain, busy, onConfig, onStart, onResults }: {
+function TrainSection({ dataset, numericColumns, dateColumns, config, job, canTrain, busy, onConfig, onStart, onCancel, onResults }: {
   dataset: Dataset; numericColumns: string[]; dateColumns: string[];
   config: TrainConfig; job: TrainingJob | null; canTrain: boolean; busy: boolean;
   onConfig: <K extends keyof TrainConfig>(key: K, value: TrainConfig[K]) => void;
-  onStart: () => void; onResults: () => void;
+  onStart: () => void; onCancel: () => void; onResults: () => void;
 }) {
   const ratioTotal = config.train_ratio + config.validation_ratio + config.test_ratio;
   const ratioValid = Math.abs(ratioTotal - 1) < 0.001;
@@ -609,7 +698,11 @@ function TrainSection({ dataset, numericColumns, dateColumns, config, job, canTr
               <NumberField label="Unidades LSTM" value={config.units} min={4} max={512} onChange={(value) => onConfig("units", value)} />
               <NumberField label="Dropout" value={config.dropout} min={0} max={0.8} step={0.05} onChange={(value) => onConfig("dropout", value)} />
               <NumberField label="Paciencia (early stopping)" value={config.patience} min={1} max={50} onChange={(value) => onConfig("patience", value)} />
+              <NumberField label="Pasos a pronosticar (0 = ninguno)" value={config.forecast_steps} min={0} max={200} onChange={(value) => onConfig("forecast_steps", value)} />
             </div>
+            {config.forecast_steps > 0 && !config.feature_columns.includes(config.target_column) && (
+              <p role="alert" className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">El pronóstico futuro requiere incluir el target entre las variables predictoras.</p>
+            )}
           </div>
           <div className="card">
             <div className="mb-5 flex items-center gap-2"><span className="grid h-8 w-8 place-items-center rounded-lg bg-emerald-50 text-sm font-bold text-emerald-700">3</span><div><h2 className="section-title">Preparación de datos</h2><p className="text-xs text-muted">División cronológica y tratamiento de nulos</p></div></div>
@@ -619,13 +712,18 @@ function TrainSection({ dataset, numericColumns, dateColumns, config, job, canTr
               <NumberField label="Prueba (%)" value={Math.round(config.test_ratio * 100)} min={5} max={39} onChange={(value) => onConfig("test_ratio", value / 100)} />
               <label><span className="field-label">Valores faltantes</span><select className="field" value={config.missing_strategy} onChange={(event) => onConfig("missing_strategy", event.target.value as TrainConfig["missing_strategy"])}><option value="forward_fill">Completar con el último valor</option><option value="interpolate">Interpolación (solo entrenamiento)</option><option value="drop">Eliminar filas incompletas</option></select></label>
             </div>
-            <div className={`mt-4 flex items-center justify-between rounded-xl px-4 py-3 text-sm ${ratioValid ? "bg-emerald-50 text-emerald-800" : "bg-amber-50 text-amber-800"}`}><span>Proporción total · {Math.round(ratioTotal * 100)}%</span><span className="font-semibold">{ratioValid ? "Cronológica 70 / 15 / 15" : "Debe sumar 100%"}</span></div>
+            <div className={`mt-4 flex items-center justify-between rounded-xl px-4 py-3 text-sm ${ratioValid ? "bg-emerald-50 text-emerald-800" : "bg-amber-50 text-amber-800"}`}><span>Proporción total · {Math.round(ratioTotal * 100)}%</span><span className="font-semibold">{ratioValid ? `Cronológica ${Math.round(config.train_ratio * 100)} / ${Math.round(config.validation_ratio * 100)} / ${Math.round(config.test_ratio * 100)}` : "Debe sumar 100%"}</span></div>
             <p className="mt-3 text-xs leading-relaxed text-muted">El escalado se ajusta únicamente con el segmento de entrenamiento. Validación y prueba conservan su orden temporal.</p>
           </div>
           <button type="button" className="primary-button w-full py-3" disabled={!canTrain || !ratioValid} onClick={onStart}>
             {busy ? <LoaderCircle className="animate-spin" size={17} /> : <Play size={16} fill="currentColor" />}
             Iniciar entrenamiento
           </button>
+          {running && (
+            <button type="button" className="secondary-button w-full py-3" onClick={onCancel}>
+              <Square size={15} />Cancelar entrenamiento
+            </button>
+          )}
         </div>
         <div className="space-y-6 xl:sticky xl:top-24">
           <div className="card">
@@ -643,7 +741,7 @@ function TrainSection({ dataset, numericColumns, dateColumns, config, job, canTr
           </div>
           {job && (
             <div className="card">
-              <div className="mb-4 flex items-start justify-between gap-3"><div><h2 className="section-title">Progreso del entrenamiento</h2><p className="mt-1 text-xs capitalize text-muted">{job.status === "queued" ? "En cola" : job.status === "running" ? "Entrenando modelo" : job.status === "completed" ? "Completado" : "Fallido"}</p></div>{running && <LoaderCircle size={18} className="animate-spin text-blue-600" />}{job.status === "completed" && <Check size={19} className="text-emerald-600" />}</div>
+              <div className="mb-4 flex items-start justify-between gap-3"><div><h2 className="section-title">Progreso del entrenamiento</h2><p className="mt-1 text-xs capitalize text-muted">{job.status === "queued" ? "En cola" : job.status === "running" ? "Entrenando modelo" : job.status === "completed" ? "Completado" : job.status === "cancelled" ? "Cancelado" : "Fallido"}</p></div>{running && <LoaderCircle size={18} className="animate-spin text-blue-600" />}{job.status === "completed" && <Check size={19} className="text-emerald-600" />}</div>
               <div className="mb-2 flex justify-between text-xs"><span className="font-medium text-slate-600">Época {job.current_epoch} de {job.total_epochs}</span><span className="text-muted">{progress}%</span></div>
               <div className="h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-blue-600 transition-all duration-500" style={{ width: `${progress}%` }} /></div>
               <div className="mt-4 grid grid-cols-2 gap-3"><SmallMetric label="Pérdida entrenamiento" value={formatNumber(job.train_loss, 5)} /><SmallMetric label="Pérdida validación" value={formatNumber(job.validation_loss, 5)} /></div>
@@ -665,8 +763,8 @@ function NumberField({ label, value, min, max, step = 1, onChange }: {
   return <label><span className="field-label">{label}</span><input className="field" type="number" value={value} min={min} max={max} step={step} onChange={(event) => onChange(Number(event.target.value))} /></label>;
 }
 
-function ResultsSection({ results, jobId, target, onTrain }: {
-  results: TrainingResults | null; jobId: string | null; target: string; onTrain: () => void;
+function ResultsSection({ results, runs, jobId, target, onTrain }: {
+  results: TrainingResults | null; runs: RunRecord[]; jobId: string | null; target: string; onTrain: () => void;
 }) {
   if (!results) {
     return (
@@ -688,24 +786,11 @@ function ResultsSection({ results, jobId, target, onTrain }: {
       <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {metricCards.map((metric) => <MetricCard key={metric.label} {...metric} />)}
       </div>
-      <div className="grid gap-6 xl:grid-cols-2">
-        <div className="card min-w-0">
-          <div className="mb-4"><h2 className="section-title">Valores reales y predicciones</h2><p className="mt-1 text-sm text-muted">Evaluación cronológica · target: {target}</p></div>
-          <div className="h-[310px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={results.predictions} margin={{ top: 8, right: 10, left: 4, bottom: 4 }}>
-                <CartesianGrid stroke="#edf0f5" strokeDasharray="4 4" vertical={false} />
-                <XAxis dataKey="date" tickFormatter={shortDate} tick={{ fontSize: 10, fill: "#8290a5" }} axisLine={false} tickLine={false} minTickGap={35} />
-                <YAxis tick={{ fontSize: 10, fill: "#8290a5" }} axisLine={false} tickLine={false} width={48} />
-                <Tooltip labelFormatter={(value) => new Date(String(value)).toLocaleString("es")} formatter={(value, name) => [formatNumber(Number(value)), name === "actual" ? "Real" : "Predicción"]} />
-                <Legend formatter={(value) => value === "actual" ? "Valor real" : "Predicción"} wrapperStyle={{ fontSize: 12 }} />
-                <Line type="monotone" dataKey="actual" name="actual" stroke="#263b5e" strokeWidth={1.8} dot={false} />
-                <Line type="monotone" dataKey="predicted" name="predicted" stroke="#3b72eb" strokeWidth={2} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-        <div className="card min-w-0">
+      <FullSeriesChart results={results} target={target} />
+      <div className="mt-6 grid gap-6 xl:grid-cols-2">
+        <ComparisonPanel metrics={results.metrics} baseline={results.baseline_metrics} />
+        <ResidualsChart results={results} />
+        <div className="card min-w-0 xl:col-span-2">
           <div className="mb-4"><h2 className="section-title">Pérdida por época</h2><p className="mt-1 text-sm text-muted">Evolución durante el entrenamiento</p></div>
           <div className="h-[310px]">
             <ResponsiveContainer width="100%" height="100%">
@@ -726,11 +811,23 @@ function ResultsSection({ results, jobId, target, onTrain }: {
         <div className="mb-4 flex items-center justify-between gap-4"><div><h2 className="section-title">Detalle de predicciones</h2><p className="mt-1 text-sm text-muted">Primeras {Math.min(100, results.predictions.length)} de {results.predictions.length.toLocaleString("es")} observaciones de prueba</p></div>{jobId && <a className="secondary-button !px-3 !py-2 sm:hidden" href={api.predictionsUrl(jobId)} aria-label="Descargar predicciones"><ArrowDownToLine size={16} /></a>}</div>
         <div className="max-h-[440px] overflow-auto">
           <table className="data-table min-w-full text-left text-xs">
-            <thead className="sticky top-0"><tr><th>Fecha</th><th>Valor real</th><th>Predicción</th><th>Error absoluto</th></tr></thead>
-            <tbody>{results.predictions.slice(0, 100).map((row, index) => <tr key={`${row.date}-${index}`}><td>{new Date(row.date).toLocaleString("es")}</td><td>{formatNumber(row.actual, 5)}</td><td className="font-semibold text-blue-700">{formatNumber(row.predicted, 5)}</td><td>{formatNumber(Math.abs(row.actual - row.predicted), 5)}</td></tr>)}</tbody>
+            <thead className="sticky top-0"><tr><th>Fecha</th><th>Valor real</th><th>Predicción</th><th>Ingenuo</th><th>Error absoluto</th></tr></thead>
+            <tbody>{results.predictions.slice(0, 100).map((row, index) => <tr key={`${row.date}-${index}`}><td>{new Date(row.date).toLocaleString("es")}</td><td>{formatNumber(row.actual, 5)}</td><td className="font-semibold text-blue-700">{formatNumber(row.predicted, 5)}</td><td>{formatNumber(row.naive, 5)}</td><td>{formatNumber(Math.abs(row.actual - row.predicted), 5)}</td></tr>)}</tbody>
           </table>
         </div>
       </div>
+      {results.forecast.length > 0 && (
+        <div className="card mt-6">
+          <div className="mb-4"><h2 className="section-title">Pronóstico futuro</h2><p className="mt-1 text-sm text-muted">{results.forecast.length} pasos posteriores al último dato observado</p></div>
+          <div className="max-h-[320px] overflow-auto">
+            <table className="data-table min-w-full text-left text-xs">
+              <thead className="sticky top-0"><tr><th>Fecha</th><th>Valor pronosticado</th></tr></thead>
+              <tbody>{results.forecast.map((row) => <tr key={row.date}><td>{new Date(row.date).toLocaleString("es")}</td><td className="font-semibold text-rose-600">{formatNumber(row.predicted, 5)}</td></tr>)}</tbody>
+            </table>
+          </div>
+        </div>
+      )}
+      <RunHistory runs={runs} />
     </>
   );
 }

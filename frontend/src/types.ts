@@ -33,7 +33,34 @@ export type Eda = {
   null_count: number;
   series: Array<{ date: string; value: number }>;
   series_date_column: string | null;
+  date_columns: string[];
+  histograms: Record<string, Array<{ start: number; end: number; count: number }>>;
+  boxplots: Record<string, Boxplot | null>;
+  acf: { values: number[]; confidence: number | null };
+  period: number | null;
+  decomposition: {
+    period: number;
+    points: Array<{
+      date: string;
+      observed: number | null;
+      trend: number | null;
+      seasonal: number | null;
+      residual: number | null;
+    }>;
+  } | null;
 };
+export type Boxplot = {
+  min: number;
+  q1: number;
+  median: number;
+  q3: number;
+  max: number;
+  whisker_low: number;
+  whisker_high: number;
+  outlier_count: number;
+  outliers: number[];
+};
+export type Metrics = { mae: number; mse: number; rmse: number; r2: number | null };
 export type TrainConfig = {
   date_column: string;
   target_column: string;
@@ -48,11 +75,12 @@ export type TrainConfig = {
   test_ratio: number;
   missing_strategy: "drop" | "forward_fill" | "interpolate";
   patience: number;
+  forecast_steps: number;
 };
 export type TrainingJob = {
   id: string;
   dataset_id: string;
-  status: "queued" | "running" | "completed" | "failed";
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
   current_epoch: number;
   total_epochs: number;
   train_loss: number | null;
@@ -61,9 +89,32 @@ export type TrainingJob = {
   validation_loss_history: number[];
   error: string | null;
 };
+export type RunRecord = {
+  id: string;
+  finishedAt: string;
+  target: string;
+  predictors: number;
+  lookback: number;
+  epochs: number;
+  units: number;
+  metrics: Metrics;
+  baseline: Metrics;
+};
 export type TrainingResults = {
-  metrics: { mae: number; mse: number; rmse: number; r2: number | null };
+  metrics: Metrics;
+  baseline_metrics: Metrics;
   losses: { train: number[]; validation: number[] };
-  predictions: Array<{ date: string; actual: number; predicted: number }>;
+  predictions: Array<{ date: string; actual: number; predicted: number; naive: number }>;
+  series: Array<{ date: string; actual: number }>;
+  split_dates: {
+    start: string;
+    train_end: string;
+    validation_start: string;
+    validation_end: string;
+    test_start: string;
+    end: string;
+  };
+  forecast: Array<{ date: string; predicted: number }>;
+  forecast_note: string | null;
   summary: string;
 };
